@@ -88,7 +88,10 @@ RUN chmod a+rw /dev/stdin /dev/stdout /dev/stderr && \
     chmod +x /usr/local/bin/docker-entrypoint-unified.sh
 
 # Add volume mount points for data persistence
-VOLUME ["/app/sqlite_db", "/app/backups"]
+# NOTE: VOLUME directive removed for Railway compatibility (Railway bans VOLUME
+# in Dockerfiles; use Railway-managed volumes instead). Upstream behavior is
+# preserved locally via docker-compose volume mounts.
+# VOLUME ["/app/sqlite_db", "/app/backups"]
 
 # Expose ports: 8000 for HTTP API, 8765 for SSE/Streamable HTTP transport
 EXPOSE 8000 8765
