@@ -176,20 +176,31 @@ def main():
             "tags": ["smoke-test"],
         },
     })
-    results["steps"].append({"step": "decision_record", "status": status, "response": resp})
-    print(f"    -> status={status}")
+    # Pull memory_id out of the wrapped MCP text payload for the D1 check.
+    dec_memory_id = None
+    try:
+        inner = json.loads(resp["result"]["content"][0]["text"])
+        dec_memory_id = inner.get("memory_id")
+    except Exception:
+        pass
+    results["steps"].append({"step": "decision_record", "status": status, "memory_id": dec_memory_id, "response": resp})
+    print(f"    -> status={status} memory_id={dec_memory_id}")
 
-    # 2. D1 check
+    # 2. D1 check — query by memory_id (schema has no tldr column on sb_decisions)
     print("[2] D1 sb_decisions row check", flush=True)
     time.sleep(1)
-    status, resp = d1_query(
-        cf_account, cf_d1, cf_token,
-        "SELECT id, tldr FROM sb_decisions WHERE tldr = ? ORDER BY rowid DESC LIMIT 1",
-        [dec_tldr],
-    )
-    rows = (resp.get("result") or [{}])[0].get("results") or []
-    results["steps"].append({"step": "d1_sb_decisions", "status": status, "found": bool(rows), "row": rows[0] if rows else None})
-    print(f"    -> found={bool(rows)} row={rows[0] if rows else None}")
+    if dec_memory_id:
+        status, resp = d1_query(
+            cf_account, cf_d1, cf_token,
+            "SELECT id, memory_id, rationale FROM sb_decisions WHERE memory_id = ? ORDER BY rowid DESC LIMIT 1",
+            [dec_memory_id],
+        )
+        rows = (resp.get("result") or [{}])[0].get("results") or []
+        results["steps"].append({"step": "d1_sb_decisions", "status": status, "found": bool(rows), "row": rows[0] if rows else None})
+        print(f"    -> found={bool(rows)} row={rows[0] if rows else None}")
+    else:
+        results["steps"].append({"step": "d1_sb_decisions", "status": 0, "found": False, "skipped": "no memory_id"})
+        print("    -> skipped (no memory_id from decision_record)")
 
     # 3. opportunity_rank
     print("[3] opportunity_rank", flush=True)
