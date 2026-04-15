@@ -170,17 +170,46 @@ async def mcp_endpoint(
             return JSONResponse(content=response.model_dump(exclude_none=True))
 
         elif request.method == "tools/list":
+            tools_out = [tool.model_dump() for tool in MCP_TOOLS]
+            # Append super-brain tool schemas when extension is enabled.
+            try:
+                from ...super_brain import is_enabled as _sb_enabled
+                if _sb_enabled():
+                    from ...super_brain.tools import TOOL_SCHEMAS as _SB_SCHEMAS
+                    for s in _SB_SCHEMAS:
+                        tools_out.append({
+                            "name": s["name"],
+                            "description": s.get("description", ""),
+                            "inputSchema": s.get("inputSchema", {"type": "object"}),
+                        })
+            except Exception as _sb_e:
+                logger.warning("super_brain tools/list append failed: %s", _sb_e)
             response = MCPResponse(
                 id=request.id,
-                result={
-                    "tools": [tool.model_dump() for tool in MCP_TOOLS]
-                }
+                result={"tools": tools_out}
             )
             return JSONResponse(content=response.model_dump(exclude_none=True))
 
         elif request.method == "tools/call":
             tool_name = request.params.get("name") if request.params else None
             arguments = request.params.get("arguments", {}) if request.params else {}
+
+            # Super-brain tool dispatch (takes precedence over upstream handlers
+            # so sb_* names don't collide with any future upstream additions).
+            try:
+                from ...super_brain import is_enabled as _sb_enabled
+                if _sb_enabled():
+                    from ...super_brain.tools import HANDLER_MAP as _SB_HANDLERS
+                    if tool_name in _SB_HANDLERS:
+                        from types import SimpleNamespace as _SN
+                        server_shim = _SN(storage=storage)
+                        sb_result = await _SB_HANDLERS[tool_name](server_shim, arguments)
+                        return JSONResponse(content=MCPResponse(
+                            id=request.id,
+                            result={"content": [{"type": "text", "text": json.dumps(sb_result, default=str)}]},
+                        ).model_dump(exclude_none=True))
+            except Exception as _sb_e:
+                logger.exception("super_brain tool dispatch failed: %s", _sb_e)
 
             result = await handle_tool_call(storage, tool_name, arguments)
 
