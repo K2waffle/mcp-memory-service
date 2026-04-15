@@ -1,0 +1,20 @@
+{
+  "$schema": "https://railway.app/railway.schema.json",
+  "build": {
+    "builder": "DOCKERFILE",
+    "dockerfilePath": "tools/docker/Dockerfile",
+    "buildArgs": {
+      "INSTALL_EXTRA": "[full]",
+      "SKIP_MODEL_DOWNLOAD": "false",
+      "FORCE_CPU_PYTORCH": "true"
+    }
+  },
+  "deploy": {
+    "startCommand": "/usr/local/bin/docker-entrypoint-unified.sh",
+    "healthcheckPath": "/api/health",
+    "healthcheckTimeout": 120,
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 5,
+    "numReplicas": 1
+  }
+}
