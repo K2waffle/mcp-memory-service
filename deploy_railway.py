@@ -42,6 +42,9 @@ SERVICE_NAME = "super-brain"
 # loaded from the caller's environment — NEVER hardcode them in this file,
 # it's committed to a public repo and would trip GitHub's secret scanning.
 NON_SECRET_DEFAULTS: dict[str, str] = {
+    # Docker entrypoint mode: 'http' runs run_server.py (FastAPI/uvicorn),
+    # 'mcp' runs stdio protocol (crashes on Railway — no stdin attached).
+    "MCP_MODE": "http",
     "MCP_SUPER_BRAIN_ENABLED": "true",
     "MCP_HTTP_ENABLED": "true",
     "MCP_HTTP_HOST": "0.0.0.0",

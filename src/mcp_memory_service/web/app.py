@@ -337,6 +337,17 @@ def create_app() -> FastAPI:
     # Include MCP protocol router
     app.include_router(mcp_router, tags=["mcp-protocol"])
 
+    # Include super-brain routers (feature-flag gated). Keeps upstream
+    # behavior unchanged when MCP_SUPER_BRAIN_ENABLED is unset.
+    try:
+        from ..super_brain import is_enabled as _sb_enabled
+        if _sb_enabled():
+            from ..super_brain.payments.routes import router as sb_payments_router
+            app.include_router(sb_payments_router, prefix="/api", tags=["super-brain-payments"])
+            logger.info("✓ Included super-brain payments router (Stripe webhook)")
+    except Exception as e:
+        logger.error(f"✗ Failed to include super-brain routers: {e}")
+
     # Include OAuth routers if enabled
     if OAUTH_ENABLED:
         from .oauth.discovery import router as oauth_discovery_router
