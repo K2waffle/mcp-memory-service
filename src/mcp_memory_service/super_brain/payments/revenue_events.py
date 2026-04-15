@@ -30,6 +30,9 @@ async def _fetchall(server: Any, sql: str, params: Optional[List[Any]] = None) -
     params = params or []
     if hasattr(storage, "d1_query"):
         return await storage.d1_query(sql, params)
+    from .._cf_d1 import is_cloudflare_like, d1_fetchall as _cf_fetchall
+    if is_cloudflare_like(storage):
+        return await _cf_fetchall(storage, sql, params)
     for attr in ("conn", "_conn", "db", "_db"):
         conn = getattr(storage, attr, None)
         if conn is not None:

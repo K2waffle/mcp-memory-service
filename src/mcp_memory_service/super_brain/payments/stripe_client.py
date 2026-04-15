@@ -187,5 +187,5 @@ def parse_event_for_revenue(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "amount_cents": int(amount),
         "currency": currency,
         "recognized_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "pci_scope": "SAQ-A",
+        "pci_scope": "saq_a",
     }

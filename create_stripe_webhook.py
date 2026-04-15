@@ -16,10 +16,22 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import ssl
 import sys
 import urllib.parse
 import urllib.request
 import urllib.error
+
+
+def _ssl_ctx():
+    """SSL context with a trusted CA bundle. Windows' default Python install
+    ships without certifi's root bundle, so api.stripe.com fails verify.
+    Try certifi first, fall back to system defaults."""
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        return ssl.create_default_context()
 
 
 EVENTS = [
@@ -53,7 +65,7 @@ def stripe_call(secret: str, method: str, path: str, form: dict | None = None):
         },
     )
     try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        with urllib.request.urlopen(req, timeout=60, context=_ssl_ctx()) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         raise RuntimeError(f"Stripe {method} {path} HTTP {e.code}: {e.read().decode('utf-8')}")

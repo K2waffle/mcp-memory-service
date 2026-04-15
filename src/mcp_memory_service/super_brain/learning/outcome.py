@@ -31,6 +31,10 @@ async def _exec(server: Any, sql: str, params: Optional[List[Any]] = None) -> An
     params = params or []
     if hasattr(storage, "d1_execute"):
         return await storage.d1_execute(sql, params)
+    from .._cf_d1 import is_cloudflare_like, d1_execute as _cf_exec
+    if is_cloudflare_like(storage):
+        await _cf_exec(storage, sql, params)
+        return None
     for attr in ("conn", "_conn", "db", "_db"):
         conn = getattr(storage, attr, None)
         if conn is not None:
@@ -50,6 +54,9 @@ async def _fetchone(server: Any, sql: str, params: Optional[List[Any]] = None) -
     params = params or []
     if hasattr(storage, "d1_query_one"):
         return await storage.d1_query_one(sql, params)
+    from .._cf_d1 import is_cloudflare_like, d1_fetchone as _cf_fetchone
+    if is_cloudflare_like(storage):
+        return await _cf_fetchone(storage, sql, params)
     for attr in ("conn", "_conn", "db", "_db"):
         conn = getattr(storage, attr, None)
         if conn is not None:

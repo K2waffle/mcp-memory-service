@@ -410,6 +410,12 @@ async def _insert_typed(server: Any, table: str, row: Dict[str, Any]) -> None:
         await storage.d1_execute(sql, vals)
         return
 
+    # Cloudflare backend — use raw D1 REST via storage's own retry client.
+    from ._cf_d1 import is_cloudflare_like, d1_execute as _cf_exec
+    if is_cloudflare_like(storage):
+        await _cf_exec(storage, sql, vals)
+        return
+
     # SQLite fallback
     for attr in ("conn", "_conn", "db", "_db"):
         conn = getattr(storage, attr, None)
