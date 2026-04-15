@@ -1215,7 +1215,16 @@ class MemoryServer:
         
         # Add a custom error handler for unsupported methods
         self.server.on_method_not_found = self.handle_method_not_found
-        
+
+        # Super-Brain extension registration (feature-flag gated inside).
+        # Attaches self.super_brain_tools and self.super_brain_handlers when
+        # MCP_SUPER_BRAIN_ENABLED is truthy; no-ops otherwise.
+        try:
+            from . import super_brain as _sb
+            _sb.register(self)
+        except Exception as _sb_exc:
+            logger.exception("super_brain registration failed: %s", _sb_exc)
+
         @self.server.list_tools()
         async def handle_list_tools() -> List[types.Tool]:
             """Return list of available MCP tools.
@@ -2149,6 +2158,21 @@ Examples:
                 tools.extend(conflict_tools)
                 logger.info(f"Added {len(conflict_tools)} conflict detection tools")
 
+                # Super-Brain extension tools (decision_record, opportunity_rank,
+                # revenue_event_record, etc.). Present only when the extension
+                # registered successfully and MCP_SUPER_BRAIN_ENABLED is on.
+                sb_tools_map = getattr(self, "super_brain_tools", None) or {}
+                if sb_tools_map:
+                    for _sb_name, _sb_schema in sb_tools_map.items():
+                        tools.append(
+                            types.Tool(
+                                name=_sb_schema.get("name", _sb_name),
+                                description=_sb_schema.get("description", ""),
+                                inputSchema=_sb_schema.get("inputSchema", {"type": "object"}),
+                            )
+                        )
+                    logger.info(f"Added {len(sb_tools_map)} super-brain tools")
+
                 logger.info(f"Returning {len(tools)} tools")
                 return tools
             except Exception as e:
@@ -2299,6 +2323,14 @@ Examples:
                     logger.info("Calling handle_get_memory_subgraph")
                     return await self.handle_get_memory_subgraph(arguments)
                 else:
+                    # Super-Brain extension dispatcher. Handlers return plain
+                    # dicts; wrap in TextContent JSON for MCP clients.
+                    sb_handlers = getattr(self, "super_brain_handlers", None) or {}
+                    if name in sb_handlers:
+                        logger.info(f"Dispatching super-brain tool: {name}")
+                        result = await sb_handlers[name](self, arguments)
+                        import json as _json
+                        return [types.TextContent(type="text", text=_json.dumps(result, default=str))]
                     logger.warning(f"Unknown tool requested: {name}")
                     raise ValueError(f"Unknown tool: {name}")
             except Exception as e:
