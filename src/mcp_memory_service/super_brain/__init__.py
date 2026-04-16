@@ -87,3 +87,38 @@ def register(server: Any) -> None:
         logger.info("super_brain: custom MCP tools registered")
     except Exception as exc:
         logger.exception("super_brain: tool registration failed: %s", exc)
+
+
+def start_background_tasks(server: Any) -> None:
+    """Schedule all super-brain background crons as asyncio futures.
+
+    Must be called from within a running event loop (e.g. a FastAPI lifespan
+    handler). Each task is fire-and-forget; failures are logged but never
+    propagate to the caller.
+
+    Tasks started:
+    - Nightly CLS consolidation (24 h interval)
+    - Self-upgrade research pipeline (6 h interval)
+    """
+    import asyncio
+
+    try:
+        from .learning.consolidation_cron import schedule_cron
+        asyncio.ensure_future(schedule_cron(server))
+        logger.info("super_brain: nightly consolidation cron scheduled")
+    except Exception as exc:
+        logger.exception("super_brain: failed to schedule consolidation cron: %s", exc)
+
+    try:
+        from .learning.research_pipeline import schedule_research
+        asyncio.ensure_future(schedule_research(server))
+        logger.info("super_brain: research pipeline cron scheduled")
+    except Exception as exc:
+        logger.exception("super_brain: failed to schedule research pipeline: %s", exc)
+
+    try:
+        from .billing.metering import schedule_metering_push
+        asyncio.ensure_future(schedule_metering_push(server))
+        logger.info("super_brain: metering push scheduler started")
+    except Exception as exc:
+        logger.exception("super_brain: failed to start metering push scheduler: %s", exc)

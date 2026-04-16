@@ -208,10 +208,27 @@ async def lifespan(app: FastAPI):
         else:
             logger.info("Backup scheduler disabled")
 
+        # Start super-brain background crons (nightly CLS + research pipeline)
+        try:
+            from ..super_brain import is_enabled as _sb_enabled
+            if _sb_enabled():
+                from ..super_brain import start_background_tasks
+
+                class _StorageServer:
+                    """Minimal server shim so background tasks can reach storage."""
+                    pass
+
+                _server_shim = _StorageServer()
+                _server_shim.storage = storage  # type: ignore[attr-defined]
+                start_background_tasks(_server_shim)
+                logger.info("super_brain: background tasks started")
+        except Exception as e:
+            logger.error(f"Failed to start super-brain background tasks: {e}")
+
     except Exception as e:
         logger.error(f"Failed to initialize storage: {e}")
         raise
-    
+
     yield
     
     # Shutdown

@@ -5,6 +5,7 @@ This module provides MCP protocol endpoints that allow Claude Code clients
 to directly access memory operations using the MCP standard.
 """
 
+import asyncio
 import json
 import logging
 from typing import Dict, Any, Optional, Union
@@ -193,6 +194,18 @@ async def mcp_endpoint(
         elif request.method == "tools/call":
             tool_name = request.params.get("name") if request.params else None
             arguments = request.params.get("arguments", {}) if request.params else {}
+
+            # Meter this call (fire-and-forget; never blocks the response)
+            try:
+                from ...super_brain import is_enabled as _sb_enabled
+                if _sb_enabled():
+                    from ...super_brain.billing.metering import record_call as _meter
+                    from types import SimpleNamespace as _SN
+                    _meter_server = _SN(storage=get_storage())
+                    api_key_val = getattr(user, "api_key", None) or getattr(user, "token", "") or ""
+                    asyncio.ensure_future(_meter(_meter_server, str(api_key_val), str(tool_name or "unknown")))
+            except Exception as _me:
+                logger.debug("metering record_call skipped: %s", _me)
 
             # Super-brain tool dispatch (takes precedence over upstream handlers
             # so sb_* names don't collide with any future upstream additions).
@@ -443,3 +456,26 @@ async def mcp_health():
         "storage_backend": "sqlite-vec",
         "statistics": stats
     }
+
+
+@router.get("/usage")
+async def mcp_usage(
+    hours: int = 24,
+    user: AuthenticationResult = Depends(require_read_access),
+):
+    """Return per-tool call counts for the last N hours (default 24).
+
+    Requires super-brain to be enabled (MCP_SUPER_BRAIN_ENABLED=1).
+    """
+    try:
+        from ...super_brain import is_enabled as _sb_enabled
+        if not _sb_enabled():
+            return {"status": "disabled", "rows": []}
+        from ...super_brain.billing.metering import get_usage_summary
+        from types import SimpleNamespace as _SN
+        server = _SN(storage=get_storage())
+        rows = await get_usage_summary(server, hours=max(1, min(hours, 720)))
+        return {"status": "ok", "hours": hours, "rows": rows}
+    except Exception as exc:
+        logger.error("mcp_usage error: %s", exc)
+        return {"status": "error", "detail": str(exc), "rows": []}
