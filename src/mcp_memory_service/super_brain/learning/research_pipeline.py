@@ -168,7 +168,63 @@ def _get_title(mem: Any) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Step 5 — Record plan as procedural memory
+# Step 5a — Write plan to sb_task_packets (no embedding needed)
+# ---------------------------------------------------------------------------
+
+async def _write_task_packet(server: Any, title: str, plan_text: str, source_hash: str) -> bool:
+    """Insert an action item into sb_task_packets via direct D1 HTTP call.
+
+    Uses storage._retry_request + storage.d1_url so no embedding is required.
+    Falls back silently if storage attributes are missing.
+    """
+    import json as _json
+    import uuid as _uuid
+
+    storage = getattr(server, "storage", None)
+    if storage is None:
+        return False
+
+    # Support HybridStorage: prefer the cloud sub-storage if present
+    for attr in ("_cloud", "_cloudflare", "cloud", "cloudflare"):
+        sub = getattr(storage, attr, None)
+        if sub is not None and hasattr(sub, "d1_url"):
+            storage = sub
+            break
+
+    d1_url = getattr(storage, "d1_url", None)
+    retry_fn = getattr(storage, "_retry_request", None)
+    if not d1_url or retry_fn is None:
+        logger.warning("research_pipeline: task_packet write skipped — no d1_url on storage")
+        return False
+
+    packet_id = str(_uuid.uuid4())
+    sql = (
+        "INSERT OR IGNORE INTO sb_task_packets "
+        "(id, memory_id, goal, inputs_json) "
+        "VALUES (?, ?, ?, ?)"
+    )
+    params = [
+        packet_id,
+        source_hash or packet_id,
+        title[:500],
+        _json.dumps({"plan": plan_text}),
+    ]
+
+    try:
+        resp = await retry_fn("POST", f"{d1_url}/query", json={"sql": sql, "params": params})
+        data = resp.json() if hasattr(resp, "json") else {}
+        if isinstance(data, dict) and data.get("success") is False:
+            logger.warning("research_pipeline: task_packet D1 insert returned: %s", data)
+            return False
+        logger.info("research_pipeline: task_packet written id=%s", packet_id)
+        return True
+    except Exception as exc:
+        logger.warning("research_pipeline: task_packet write failed: %s", exc)
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Step 5b — Record plan as procedural memory
 # ---------------------------------------------------------------------------
 
 async def _write_plan_memory(server: Any, plan_text: str, source_hash: str) -> Optional[str]:
@@ -282,21 +338,33 @@ async def run_research_cycle(server: Any) -> Dict[str, Any]:
     live = _live_modules()
     plan_text = _generate_plan(top, live)
 
-    # 5. Record
+    # 5. Record — write to sb_task_packets (no embedding) AND procedural memory
     source_hash = getattr(top, "content_hash", "") or ""
-    plan_hash = await _write_plan_memory(server, plan_text, source_hash)
-    plan_written = plan_hash is not None
-    if plan_written:
-        logger.info("research_pipeline: plan memory written (%s)", plan_hash[:12])
+
+    # 5a. Write actionable task packet (bypasses embedding — always attempted first)
+    packet_ok = await _write_task_packet(server, title, plan_text, source_hash)
+    if packet_ok:
+        logger.info("research_pipeline: task packet written for '%s'", title[:60])
     else:
-        logger.warning("research_pipeline: plan memory write failed")
+        logger.warning("research_pipeline: task packet write failed for '%s'", title[:60])
+
+    # 5b. Also try procedural memory (may fail if embedding 401 — non-fatal)
+    plan_hash = await _write_plan_memory(server, plan_text, source_hash)
+    plan_written = plan_hash is not None or packet_ok
+    if plan_hash:
+        logger.info("research_pipeline: plan memory written (%s)", plan_hash[:12])
 
     # 6. Tag source
     tagged = await _tag_source_queued(server, top)
     if not tagged:
         logger.warning("research_pipeline: could not tag source memory as queued")
 
-    return {"selected": title, "score": top_score, "plan_written": plan_written}
+    return {
+        "selected": title,
+        "score": top_score,
+        "plan_written": plan_written,
+        "packet_written": packet_ok,
+    }
 
 
 async def schedule_research(server: Any) -> None:

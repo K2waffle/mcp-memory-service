@@ -458,6 +458,67 @@ async def mcp_health():
     }
 
 
+@router.get("/tasks")
+async def mcp_tasks(
+    status: str = "pending",
+    limit: int = 20,
+    user: AuthenticationResult = Depends(require_read_access),
+):
+    """Return task packets from sb_task_packets.
+
+    status='pending' (default) → outcome IS NULL
+    status='all'               → all rows
+    status='done'              → outcome IS NOT NULL
+    """
+    try:
+        from ...super_brain import is_enabled as _sb_enabled
+        if not _sb_enabled():
+            return {"status": "disabled", "tasks": []}
+
+        storage = get_storage()
+        # Unwrap hybrid → cloud sub-storage if needed
+        actual = storage
+        for attr in ("_cloud", "_cloudflare", "cloud", "cloudflare"):
+            sub = getattr(storage, attr, None)
+            if sub is not None and hasattr(sub, "d1_url"):
+                actual = sub
+                break
+
+        d1_url = getattr(actual, "d1_url", None)
+        retry_fn = getattr(actual, "_retry_request", None)
+        if not d1_url or retry_fn is None:
+            return {"status": "no_d1", "tasks": []}
+
+        if status == "pending":
+            sql = (
+                "SELECT id, memory_id, goal, inputs_json, outcome, created_at "
+                "FROM sb_task_packets WHERE outcome IS NULL "
+                "ORDER BY created_at DESC LIMIT ?"
+            )
+        elif status == "done":
+            sql = (
+                "SELECT id, memory_id, goal, inputs_json, outcome, created_at "
+                "FROM sb_task_packets WHERE outcome IS NOT NULL "
+                "ORDER BY created_at DESC LIMIT ?"
+            )
+        else:
+            sql = (
+                "SELECT id, memory_id, goal, inputs_json, outcome, created_at "
+                "FROM sb_task_packets ORDER BY created_at DESC LIMIT ?"
+            )
+
+        resp = await retry_fn("POST", f"{d1_url}/query", json={"sql": sql, "params": [min(limit, 100)]})
+        data = resp.json() if hasattr(resp, "json") else {}
+        rows = []
+        if isinstance(data, dict) and data.get("result"):
+            for r in (data["result"] or []):
+                rows = r.get("results", []) if isinstance(r, dict) else []
+        return {"status": "ok", "tasks": rows, "count": len(rows)}
+    except Exception as exc:
+        logger.error("mcp_tasks error: %s", exc)
+        return {"status": "error", "detail": str(exc), "tasks": []}
+
+
 @router.get("/usage")
 async def mcp_usage(
     hours: int = 24,
