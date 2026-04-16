@@ -1,16 +1,15 @@
 """FastAPI routes for the super-brain payments surface.
 
-Currently exposes a single endpoint:
+Endpoints:
 
     POST /api/stripe/webhook
+        Verify Stripe signature → record revenue event → deliver playbook PDF.
 
-Stripe posts events here. We verify the ``Stripe-Signature`` header using
-``STRIPE_WEBHOOK_SECRET`` (fail closed if absent), then translate qualifying
-events into ``sb_revenue_events`` rows via
-``super_brain.payments.revenue_events.record_event``.
+    POST /webhook/stripe
+        Alias at the root-level path that some Stripe dashboard configs prefer.
 
-This router is only mounted when ``super_brain.is_enabled()`` returns True,
-so upstream behavior is unchanged when the feature flag is off.
+Delivery fires in the background (``BackgroundTasks``) so Stripe always gets
+a fast 200 and never retries due to email/R2 latency.
 """
 from __future__ import annotations
 
@@ -18,7 +17,7 @@ import json
 import logging
 from types import SimpleNamespace
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 
 from ...web.dependencies import get_storage
 from .stripe_client import parse_event_for_revenue, verify_webhook_signature
@@ -29,34 +28,61 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@router.post("/stripe/webhook")
-async def stripe_webhook(request: Request, storage=Depends(get_storage)):
-    """Receive a Stripe event, verify signature, record revenue.
-
-    Idempotent: Stripe retries the same ``event.id`` on non-2xx, and
-    ``record_event`` deduplicates on the same id.
-    """
-    payload = await request.body()
-    sig_header = request.headers.get("stripe-signature", "")
-
+def _handle_webhook_body(payload: bytes, sig_header: str):
+    """Shared verification + parsing logic. Returns (event_dict, error_response)."""
     ok, reason = verify_webhook_signature(payload, sig_header)
     if not ok:
-        # Don't leak signature-verification internals in the response body.
         logger.warning("stripe webhook rejected: %s", reason)
-        raise HTTPException(status_code=400, detail="invalid_signature")
+        return None, (400, "invalid_signature")
 
     try:
         event = json.loads(payload.decode("utf-8"))
     except Exception as exc:
         logger.warning("stripe webhook: bad json: %s", exc)
-        raise HTTPException(status_code=400, detail="bad_json")
+        return None, (400, "bad_json")
+
+    return event, None
+
+
+@router.post("/stripe/webhook")
+@router.post("/webhook/stripe")  # alias for Stripe dashboard flexibility
+async def stripe_webhook(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    storage=Depends(get_storage),
+):
+    """Receive a Stripe event, verify signature, record revenue, deliver PDF.
+
+    Idempotent: Stripe retries the same ``event.id`` on non-2xx, and
+    ``record_event`` deduplicates on the same id.
+    """
+    payload    = await request.body()
+    sig_header = request.headers.get("stripe-signature", "")
+
+    event, err = _handle_webhook_body(payload, sig_header)
+    if err:
+        raise HTTPException(status_code=err[0], detail=err[1])
 
     revenue_args = parse_event_for_revenue(event)
     if revenue_args is None:
-        # Not a revenue event we care about — 200 so Stripe doesn't retry.
         return {"status": "ignored", "type": event.get("type", "unknown")}
 
-    # revenue_events.record_event expects a server-like object with `.storage`
+    # Record the revenue event (idempotent)
     server_shim = SimpleNamespace(storage=storage)
     result = await record_event(server_shim, revenue_args)
+
+    # Fire-and-forget PDF delivery for completed checkout sessions
+    if event.get("type") == "checkout.session.completed":
+        session   = (event.get("data") or {}).get("object") or {}
+        to_email  = (session.get("customer_details") or {}).get("email")
+        if not to_email:
+            to_email = session.get("customer_email")
+        if to_email:
+            from .delivery import deliver_playbook
+            background_tasks.add_task(deliver_playbook, to_email)
+            logger.info("stripe webhook: queued delivery to %s", to_email)
+        else:
+            logger.warning("stripe webhook: checkout.session.completed but no email in session %s",
+                           session.get("id"))
+
     return {"status": "ok", **result}

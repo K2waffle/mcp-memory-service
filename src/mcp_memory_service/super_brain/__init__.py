@@ -60,7 +60,27 @@ def register(server: Any) -> None:
     except Exception as exc:  # pragma: no cover
         logger.exception("super_brain: markdown mirror hook failed: %s", exc)
 
-    # Custom MCP tools (decision_record, opportunity_rank, research_source_with_trust, ...)
+    # Novelty gate — Hinton prediction-error principle.
+    # NOTE: novelty_gate.gate_write() is a PRE-WRITE HOOK. Call it before
+    # storage.store() on any user-initiated write path to block redundant
+    # chunks. Example pattern in a write handler:
+    #
+    #     from .guardrails.novelty_gate import gate_write
+    #     gate = await gate_write(server, content, tags)
+    #     if not gate["allow"]:
+    #         return {"status": "skipped", **gate}
+    #     await storage.store(memory)
+    #
+    # The module is imported here to surface import errors at startup rather
+    # than silently at first write.
+    try:
+        from .guardrails import novelty_gate as _novelty_gate  # noqa: F401 — validates import
+        logger.info("super_brain: novelty gate loaded (pre-write hook available)")
+    except Exception as exc:
+        logger.exception("super_brain: novelty gate import failed: %s", exc)
+
+    # Custom MCP tools (decision_record, opportunity_rank, research_source_with_trust,
+    # analogical_search, distill_soft, ...)
     try:
         from . import tools as sb_tools
         sb_tools.register_tools(server)
